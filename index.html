@@ -1,61 +1,152 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>摔倒检测</title>
+  <title>摔倒监测系统</title>
   <style>
     body {
       font-family: Arial, sans-serif;
+      background-color: #f0f4f8;
+      padding: 30px;
       text-align: center;
-      padding-top: 50px;
-      background-color: #f4f4f4;
+    }
+    h2 {
+      color: #2c3e50;
     }
     button {
-      font-size: 18px;
-      padding: 10px 20px;
+      padding: 12px 24px;
       margin: 10px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      background-color: #3498db;
+      color: white;
+      cursor: pointer;
     }
-    #output {
-      margin-top: 30px;
-      font-size: 20px;
+    button:hover {
+      background-color: #2980b9;
+    }
+    p {
+      font-size: 16px;
       color: #333;
+    }
+    #status {
+      margin-top: 20px;
+      font-weight: bold;
     }
   </style>
 </head>
 <body>
-  <h1>摔倒检测系统</h1>
-  <button onclick="connectBluetooth()">连接蓝牙</button>
-  <div id="output">等待连接...</div>
+  <h2>摔倒监测系统</h2>
+  <button onclick="connectBluetooth()">连接蓝牙设备</button>
+  <button onclick="connectMQTT()">连接MQTT</button>
+  <button onclick="resetStatus()">复位状态</button>
+  <p id="status">设备未连接</p>
+  <p id="location">定位中...</p>
+
+  <script src="https://unpkg.com/paho-mqtt/mqttws31.min.js"></script>
 
   <script>
-    let characteristic = null;
+    const serviceUUID = "12345678-1234-1234-1234-1234567890ab";  // 请替换为实际UUID
+    const characteristicUUID = "abcd1234-1234-1234-1234-abcdefabcdef"; // 请替换为实际UUID
+
+    const clientId = "detector_0_0_2025061107";
+    const username = "detector";
+    const password = "c772a16b5fb4b196bc6f91bae3a7ba990871159815aa48cb39a8f8348518ebb8";
+    const mqttHost = "9904a57d85.st1.iotda-device.cn-north-4.myhuaweicloud.com";
+    const mqttPort = 8883;
+
+    let lat = null, lng = null;
+    let mqttClient = null;
+
+    // 获取定位
+    navigator.geolocation.getCurrentPosition(
+      position => {
+        lat = position.coords.latitude;
+        lng = position.coords.longitude;
+        document.getElementById("location").innerText = `位置：${lat}, ${lng}`;
+      },
+      err => {
+        document.getElementById("location").innerText = "无法获取定位（需HTTPS）";
+      }
+    );
 
     async function connectBluetooth() {
       try {
         const device = await navigator.bluetooth.requestDevice({
-          filters: [{ name: 'ESP32-Fall' }],
-          optionalServices: ['12345678-1234-1234-1234-1234567890ab']
+          filters: [{ services: [serviceUUID] }]
         });
-
         const server = await device.gatt.connect();
-        const service = await server.getPrimaryService('12345678-1234-1234-1234-1234567890ab');
-        characteristic = await service.getCharacteristic('abcd1234-1234-1234-1234-abcdefabcdef');
+        const service = await server.getPrimaryService(serviceUUID);
+        const characteristic = await service.getCharacteristic(characteristicUUID);
+
+        document.getElementById("status").innerText = "蓝牙已连接，正在监听数据...";
 
         await characteristic.startNotifications();
-        characteristic.addEventListener('characteristicvaluechanged', handleData);
+        characteristic.addEventListener("characteristicvaluechanged", event => {
+          const decoder = new TextDecoder("utf-8");
+          const jsonStr = decoder.decode(event.target.value);
+          console.log("接收到的数据:", jsonStr);
 
-        document.getElementById('output').textContent = '蓝牙连接成功，等待数据...';
-        console.log("蓝牙连接成功");
-      } catch (error) {
-        console.error("蓝牙连接失败:", error);
-        document.getElementById('output').textContent = '连接失败，请重试';
+          try {
+            const data = JSON.parse(jsonStr);
+            if (data.fall === 1) {
+              const direction = data.dir || "未知";
+              document.getElementById("status").innerText = `检测到摔倒（方向：${direction}），上传中...`;
+              sendToMQTT(direction);
+            }
+          } catch (e) {
+            console.error("解析失败：", e);
+          }
+        });
+      } catch (err) {
+        alert("蓝牙连接失败：" + err);
       }
     }
 
-    function handleData(event) {
-      const value = new TextDecoder().decode(event.target.value);
-      console.log("收到数据:", value);
-      document.getElementById('output').textContent = `收到：${value}`;
+    function connectMQTT() {
+      mqttClient = new Paho.MQTT.Client(mqttHost, mqttPort, clientId);
+      mqttClient.connect({
+        userName: username,
+        password: password,
+        useSSL: true,
+        onSuccess: () => {
+          alert("MQTT连接成功");
+        },
+        onFailure: err => {
+          alert("MQTT连接失败：" + JSON.stringify(err));
+        }
+      });
+    }
+
+    function sendToMQTT(direction) {
+      if (!mqttClient || !mqttClient.isConnected()) {
+        alert("MQTT未连接！");
+        return;
+      }
+
+      const topic = `$oc/devices/${clientId}/sys/properties/report`;
+      const payload = JSON.stringify({
+        services: [{
+          service_id: "FallDevice",
+          properties: {
+            fall: 1,
+            direction: direction,
+            latitude: lat,
+            longitude: lng
+          },
+          event_time: new Date().toISOString()
+        }]
+      });
+
+      const message = new Paho.MQTT.Message(payload);
+      message.destinationName = topic;
+      mqttClient.send(message);
+      document.getElementById("status").innerText = `数据已上传（方向：${direction}）`;
+    }
+
+    function resetStatus() {
+      document.getElementById("status").innerText = "已复位，等待新数据...";
     }
   </script>
 </body>
