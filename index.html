@@ -1,156 +1,107 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>摔倒检测上传</title>
-  <script src="https://unpkg.com/paho-mqtt/mqttws31.min.js"></script>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #f0f2f5;
-      text-align: center;
-      padding: 50px;
-    }
-    h2 {
-      color: #333;
-    }
-    button {
-      padding: 10px 20px;
-      margin: 10px;
-      font-size: 16px;
-      border: none;
-      background: #1890ff;
-      color: white;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    button:hover {
-      background: #40a9ff;
-    }
-    #status {
-      margin-top: 20px;
-      font-size: 16px;
-    }
-  </style>
+  <meta charset="utf-8">
+  <title>摔倒监测系统</title>
 </head>
 <body>
+  <h2>摔倒监测系统</h2>
+  <button onclick="connectBluetooth()">连接蓝牙设备</button>
+  <p id="status">设备未连接</p>
+  <p id="location">定位中...</p>
 
-  <h2>摔倒检测上传平台</h2>
-
-  <button onclick="connectBluetooth()">连接蓝牙</button>
-  <button onclick="connectMQTT()">连接MQTT</button>
-  <button onclick="resetStatus()">复位</button>
-
-  <div id="status">
-    <p id="bleStatus">蓝牙：未连接</p>
-    <p id="mqttStatus">MQTT：未连接</p>
-    <p id="fallStatus">状态：无</p>
-  </div>
-
+  <script src="https://unpkg.com/paho-mqtt/mqttws31.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.1.1/crypto-js.min.js"></script>
   <script>
-    let mqttClient;
-    let bleCharacteristic;
+    const serviceUUID = "12345678-1234-1234-1234-1234567890ab";  // 替换为蓝牙服务 UUID
+    const characteristicUUID = "abcd1234-1234-1234-1234-abcdefabcdef"; // 替换为特征 UUID
 
-    // MQTT 连接参数
-    const mqttConfig = {
-      host: "9904a57d85.st1.iotda-device.cn-north-4.myhuaweicloud.com",
-      port: 443,
-      clientId: "detector_0_0_2025061107",
-      username: "detector",
-      password: "c772a16b5fb4b196bc6f91bae3a7ba990871159815aa48cb39a8f8348518ebb8"
-    };
+    const deviceId = "detector";
+    const deviceSecret = "Detector123456";
+    const mqttHost = "iot-mqtts.cn-north-4.myhuaweicloud.com"; // 华为云 IoT MQTT 地址
+    const mqttPort = 443;
 
-    function connectMQTT() {
-      mqttClient = new Paho.MQTT.Client(
-        mqttConfig.host,
-        mqttConfig.port,
-        mqttConfig.clientId
-      );
+    let lat = null, lng = null;
 
-      mqttClient.connect({
-        userName: mqttConfig.username,
-        password: mqttConfig.password,
-        useSSL: true,
-        onSuccess: () => {
-          document.getElementById("mqttStatus").innerText = "MQTT：已连接";
-          console.log("✅ 已连接 MQTT");
-        },
-        onFailure: e => {
-          console.error("❌ MQTT连接失败", e);
-          alert("MQTT连接失败：" + JSON.stringify(e));
-        }
-      });
-    }
+    // 获取当前定位
+    navigator.geolocation.getCurrentPosition(
+      position => {
+        lat = position.coords.latitude;
+        lng = position.coords.longitude;
+        document.getElementById("location").innerText = `位置：${lat}, ${lng}`;
+      },
+      err => {
+        document.getElementById("location").innerText = "无法获取位置（需要 HTTPS）";
+      }
+    );
 
     async function connectBluetooth() {
       try {
         const device = await navigator.bluetooth.requestDevice({
-          filters: [{ name: 'ESP32-Fall' }],
-          optionalServices: ['12345678-1234-1234-1234-1234567890ab']
+          filters: [{ services: [serviceUUID] }]
         });
-
         const server = await device.gatt.connect();
-        const service = await server.getPrimaryService('12345678-1234-1234-1234-1234567890ab');
-        bleCharacteristic = await service.getCharacteristic('abcd1234-1234-1234-1234-abcdefabcdef');
+        const service = await server.getPrimaryService(serviceUUID);
+        const characteristic = await service.getCharacteristic(characteristicUUID);
 
-        await bleCharacteristic.startNotifications();
-        bleCharacteristic.addEventListener('characteristicvaluechanged', handleNotification);
+        document.getElementById("status").innerText = "蓝牙已连接，监听中...";
 
-        document.getElementById("bleStatus").innerText = "蓝牙：已连接";
-        console.log("✅ 蓝牙连接成功");
-      } catch (error) {
-        console.error("蓝牙连接失败", error);
-        alert("蓝牙连接失败: " + error);
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', event => {
+          const value = event.target.value;
+          const fallStatus = value.getUint8(0);           // 0 = 正常，1 = 摔倒
+          const directionCode = value.getUint8(1);        // 0 = 前，1 = 后，2 = 左，3 = 右
+          const directionMap = ["前", "后", "左", "右"];
+          const direction = directionMap[directionCode] || "未知";
+
+          if (fallStatus === 1) {
+            document.getElementById("status").innerText = `检测到摔倒（方向：${direction}），上传中...`;
+            sendToMQTT(direction);
+          }
+        });
+      } catch (err) {
+        alert("蓝牙连接失败：" + err);
       }
     }
 
-    function handleNotification(event) {
-      const value = new TextDecoder().decode(event.target.value);
-      console.log("收到BLE数据: ", value);
+    function sendToMQTT(direction) {
+      const timestamp = Date.now();
+      const clientId = `${deviceId}|securemode=3,signmethod=hmacsha256,timestamp=${timestamp}|`;
+      const signContent = `clientId${deviceId}deviceName${deviceId}timestamp${timestamp}`;
+      const signature = CryptoJS.HmacSHA256(signContent, deviceSecret).toString();
+      const username = `${deviceId};${timestamp}`;
+      const password = signature;
 
-      document.getElementById("fallStatus").innerText = "状态：" + value;
+      const client = new Paho.MQTT.Client(mqttHost, mqttPort, clientId);
 
-      // 上传属性到华为云
-      if (mqttClient && mqttClient.isConnected()) {
-        const topic = `$oc/devices/${mqttConfig.username}/sys/properties/report`;
-        const payload = JSON.stringify({
-          services: [{
-            service_id: "FallDetect",
-            properties: JSON.parse(value),
-            event_time: new Date().toISOString()
-          }]
-        });
-
-        mqttClient.send(topic, payload);
-        console.log("✅ 属性已上报：", payload);
-      } else {
-        console.warn("⚠️ MQTT 未连接，无法上传");
-      }
-    }
-
-    function resetStatus() {
-      const value = {
-        fall: 0,
-        dir: "无"
-      };
-
-      document.getElementById("fallStatus").innerText = "状态：" + JSON.stringify(value);
-
-      if (mqttClient && mqttClient.isConnected()) {
-        const topic = `$oc/devices/${mqttConfig.username}/sys/properties/report`;
-        const payload = JSON.stringify({
-          services: [{
-            service_id: "FallDetect",
-            properties: value,
-            event_time: new Date().toISOString()
-          }]
-        });
-
-        mqttClient.send(topic, payload);
-        console.log("✅ 手动复位已上报：", payload);
-      } else {
-        console.warn("⚠️ MQTT 未连接");
-      }
+      client.connect({
+        userName: username,
+        password: password,
+        useSSL: true,
+        onSuccess: () => {
+          const topic = `$oc/devices/${deviceId}/sys/properties/report`;
+          const payload = JSON.stringify({
+            services: [{
+              service_id: "FallDevice",
+              properties: {
+                fall: 1,
+                direction: direction,
+                latitude: lat,
+                longitude: lng
+              },
+              event_time: new Date().toISOString()
+            }]
+          });
+          const message = new Paho.MQTT.Message(payload);
+          message.destinationName = topic;
+          client.send(message);
+          document.getElementById("status").innerText = `已上传至华为云平台：${direction}摔倒`;
+        },
+        onFailure: err => {
+          console.error("MQTT连接失败", err);
+          alert("MQTT连接失败：" + JSON.stringify(err));
+        }
+      });
     }
   </script>
 </body>
