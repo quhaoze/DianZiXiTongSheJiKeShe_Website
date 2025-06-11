@@ -1,86 +1,34 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html>
 <head>
   <meta charset="UTF-8">
-  <title>摔倒检测上传</title>
-  <script src="https://unpkg.com/paho-mqtt/mqttws31.min.js"></script>
+  <title>摔倒检测</title>
   <style>
     body {
       font-family: Arial, sans-serif;
-      background: #f0f2f5;
       text-align: center;
-      padding: 50px;
-    }
-    h2 {
-      color: #333;
+      padding-top: 50px;
+      background-color: #f4f4f4;
     }
     button {
+      font-size: 18px;
       padding: 10px 20px;
       margin: 10px;
-      font-size: 16px;
-      border: none;
-      background: #1890ff;
-      color: white;
-      border-radius: 4px;
-      cursor: pointer;
     }
-    button:hover {
-      background: #40a9ff;
-    }
-    #status {
-      margin-top: 20px;
-      font-size: 16px;
+    #output {
+      margin-top: 30px;
+      font-size: 20px;
+      color: #333;
     }
   </style>
 </head>
 <body>
-
-  <h2>摔倒检测上传平台</h2>
-
+  <h1>摔倒检测系统</h1>
   <button onclick="connectBluetooth()">连接蓝牙</button>
-  <button onclick="connectMQTT()">连接MQTT</button>
-  <button onclick="resetStatus()">复位</button>
-
-  <div id="status">
-    <p id="bleStatus">蓝牙：未连接</p>
-    <p id="mqttStatus">MQTT：未连接</p>
-    <p id="fallStatus">状态：无</p>
-  </div>
+  <div id="output">等待连接...</div>
 
   <script>
-    let mqttClient;
-    let bleCharacteristic;
-
-    // MQTT 连接参数
-    const mqttConfig = {
-      host: "9904a57d85.st1.iotda-device.cn-north-4.myhuaweicloud.com",
-      port: 443,
-      clientId: "detector_0_0_2025061107",
-      username: "detector",
-      password: "c772a16b5fb4b196bc6f91bae3a7ba990871159815aa48cb39a8f8348518ebb8"
-    };
-
-    function connectMQTT() {
-      mqttClient = new Paho.MQTT.Client(
-        mqttConfig.host,
-        mqttConfig.port,
-        mqttConfig.clientId
-      );
-
-      mqttClient.connect({
-        userName: mqttConfig.username,
-        password: mqttConfig.password,
-        useSSL: true,
-        onSuccess: () => {
-          document.getElementById("mqttStatus").innerText = "MQTT：已连接";
-          console.log("✅ 已连接 MQTT");
-        },
-        onFailure: e => {
-          console.error("❌ MQTT连接失败", e);
-          alert("MQTT连接失败：" + JSON.stringify(e));
-        }
-      });
-    }
+    let characteristic = null;
 
     async function connectBluetooth() {
       try {
@@ -91,66 +39,23 @@
 
         const server = await device.gatt.connect();
         const service = await server.getPrimaryService('12345678-1234-1234-1234-1234567890ab');
-        bleCharacteristic = await service.getCharacteristic('abcd1234-1234-1234-1234-abcdefabcdef');
+        characteristic = await service.getCharacteristic('abcd1234-1234-1234-1234-abcdefabcdef');
 
-        await bleCharacteristic.startNotifications();
-        bleCharacteristic.addEventListener('characteristicvaluechanged', handleNotification);
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', handleData);
 
-        document.getElementById("bleStatus").innerText = "蓝牙：已连接";
-        console.log("✅ 蓝牙连接成功");
+        document.getElementById('output').textContent = '蓝牙连接成功，等待数据...';
+        console.log("蓝牙连接成功");
       } catch (error) {
-        console.error("蓝牙连接失败", error);
-        alert("蓝牙连接失败: " + error);
+        console.error("蓝牙连接失败:", error);
+        document.getElementById('output').textContent = '连接失败，请重试';
       }
     }
 
-    function handleNotification(event) {
+    function handleData(event) {
       const value = new TextDecoder().decode(event.target.value);
-      console.log("收到BLE数据: ", value);
-
-      document.getElementById("fallStatus").innerText = "状态：" + value;
-
-      // 上传属性到华为云
-      if (mqttClient && mqttClient.isConnected()) {
-        const topic = `$oc/devices/${mqttConfig.username}/sys/properties/report`;
-        const payload = JSON.stringify({
-          services: [{
-            service_id: "FallDetect",
-            properties: JSON.parse(value),
-            event_time: new Date().toISOString()
-          }]
-        });
-
-        mqttClient.send(topic, payload);
-        console.log("✅ 属性已上报：", payload);
-      } else {
-        console.warn("⚠️ MQTT 未连接，无法上传");
-      }
-    }
-
-    function resetStatus() {
-      const value = {
-        fall: 0,
-        dir: "无"
-      };
-
-      document.getElementById("fallStatus").innerText = "状态：" + JSON.stringify(value);
-
-      if (mqttClient && mqttClient.isConnected()) {
-        const topic = `$oc/devices/${mqttConfig.username}/sys/properties/report`;
-        const payload = JSON.stringify({
-          services: [{
-            service_id: "FallDetect",
-            properties: value,
-            event_time: new Date().toISOString()
-          }]
-        });
-
-        mqttClient.send(topic, payload);
-        console.log("✅ 手动复位已上报：", payload);
-      } else {
-        console.warn("⚠️ MQTT 未连接");
-      }
+      console.log("收到数据:", value);
+      document.getElementById('output').textContent = `收到：${value}`;
     }
   </script>
 </body>
