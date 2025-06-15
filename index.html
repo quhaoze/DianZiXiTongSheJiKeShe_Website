@@ -44,28 +44,27 @@
   <h2>摔倒监测系统</h2>
 
   <button id="btnConnectBluetooth">连接蓝牙设备</button>
-  <button id="btnConnectMQTT">连接MQTT服务器并上传</button>
+  <button id="btnConnectHTTP">连接云平台并上传</button>
   <button id="btnReset">复位状态</button>
 
   <p id="status">设备未连接</p>
   <p id="location">定位中...</p>
   <p id="fallStatus">无摔倒状态</p>
 
-  <script src="https://cdn.jsdelivr.net/npm/paho-mqtt@1.1.0/paho-mqtt.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.1.1/crypto-js.min.js"></script>
   <script>
-    const serviceUUID = "12345678-1234-1234-1234-1234567890ab";  // 替换为你的蓝牙服务UUID
-    const characteristicUUID = "abcd1234-1234-1234-1234-abcdefabcdef"; // 替换为你的特征UUID
+    const serviceUUID = "12345678-1234-1234-1234-1234567890ab";
+    const characteristicUUID = "abcd1234-1234-1234-1234-abcdefabcdef";
 
-    const deviceId = "detector";
-    const deviceSecret = "0995b5766d23906954c608a97824b7ffc0aa17a5c635e7f639b158a4d0971957";
-    const mqttHost = "iot-ws.cn-north-4.myhuaweicloud.com";
-    const mqttPort = 443;
-
+    const projectId = "8ed7bd621ad14534a23397c2501bbf67"; // 从华为云项目中获取
+    const deviceId = "shuaidaojiancedevice1";
+    const deviceSecret = "quhaoze110110110";
+    const appId = ""; // 可选
+    const iotBaseURL = "https://iotda.cn-north-4.myhuaweicloud.com";
+    
     let lat = null, lng = null;
-    let mqttClient = null;
-    let latestDirection = "";
+    let accessToken = "";
     let latestFall = 0;
+    let latestDirection = "";
 
     // 获取地理位置
     navigator.geolocation.getCurrentPosition(
@@ -94,7 +93,6 @@
         await characteristic.startNotifications();
         characteristic.addEventListener('characteristicvaluechanged', event => {
           const value = event.target.value;
-          // 读取字符串
           const decoder = new TextDecoder('utf-8');
           const msg = decoder.decode(value);
 
@@ -106,8 +104,8 @@
             document.getElementById("fallStatus").innerText = 
               latestFall ? `检测到摔倒（方向：${latestDirection}）` : "无摔倒状态";
 
-            if (latestFall && mqttClient && mqttClient.isConnected()) {
-              sendToMQTT(latestDirection);
+            if (latestFall && accessToken) {
+              sendToHuaweiIoT();
             }
           } catch(e) {
             console.warn("解析蓝牙数据失败", e, msg);
@@ -119,54 +117,83 @@
       }
     }
 
-    // MQTT连接及消息发送
-    function connectMQTT() {
-      const timestamp = Date.now();
-      const clientId = `${deviceId}|securemode=2,signmethod=hmacsha256,timestamp=${timestamp}|`;
-      const username = deviceId;
-      const signContent = `clientId${deviceId}deviceId${deviceId}timestamp${timestamp}`;
-      const password = CryptoJS.HmacSHA256(signContent, deviceSecret).toString(CryptoJS.enc.Hex);
-
-      mqttClient = new Paho.Client(mqttHost, mqttPort, clientId);
-
-      mqttClient.connect({
-        userName: username,
-        password: password,
-        useSSL: true,
-        onSuccess: () => {
-          document.getElementById("status").innerText = "MQTT服务器已连接";
-          // 若已有摔倒状态则上传
-          if(latestFall === 1) sendToMQTT(latestDirection);
+    // 获取 token（使用设备ID和密钥）
+    async function getAccessToken() {
+      const response = await fetch(`${iotBaseURL}/v5/iot/${projectId}/auth/token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
         },
-        onFailure: (err) => {
-          alert("MQTT连接失败：" + (err.errorMessage || JSON.stringify(err)));
-          document.getElementById("status").innerText = "MQTT连接失败";
-        }
+        body: JSON.stringify({
+          auth: {
+            identity: {
+              methods: ["password"],
+              password: {
+                user: {
+                  name: deviceId,
+                  password: deviceSecret,
+                  domain: { name: deviceId }
+                }
+              }
+            },
+            scope: { project: { name: "cn-north-4" } }
+          }
+        })
       });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error("Token获取失败: " + err);
+      }
+
+      const data = await response.json();
+      return data.token || data.access_token || data || "";
     }
 
-    function sendToMQTT(direction) {
-      if (!mqttClient || !mqttClient.isConnected()) {
-        console.warn("MQTT未连接，无法发送");
-        return;
-      }
-      const topic = `$oc/devices/${deviceId}/sys/properties/report`;
-      const payload = JSON.stringify({
+    // 上传属性
+    async function sendToHuaweiIoT() {
+      const payload = {
         services: [{
           service_id: "FallDevice",
           properties: {
             fall: 1,
-            direction: direction,
+            direction: latestDirection,
             latitude: lat,
             longitude: lng
           },
           event_time: new Date().toISOString()
         }]
+      };
+
+      const response = await fetch(`${iotBaseURL}/v5/iot/${projectId}/devices/${deviceId}/properties`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Auth-Token": accessToken
+        },
+        body: JSON.stringify(payload)
       });
-      const message = new Paho.MQTT.Message(payload);
-      message.destinationName = topic;
-      mqttClient.send(message);
-      document.getElementById("status").innerText = `已上传至华为云：${direction} 摔倒`;
+
+      if (response.ok) {
+        document.getElementById("status").innerText = `已上报摔倒事件（${latestDirection}）`;
+      } else {
+        const err = await response.text();
+        alert("上报失败: " + err);
+      }
+    }
+
+    async function connectHTTP() {
+      document.getElementById("status").innerText = "正在连接华为云...";
+      try {
+        accessToken = await getAccessToken();
+        document.getElementById("status").innerText = "已连接华为云";
+        if (latestFall === 1) {
+          sendToHuaweiIoT();
+        }
+      } catch (e) {
+        alert("连接失败：" + e.message);
+        document.getElementById("status").innerText = "连接失败";
+      }
     }
 
     // 复位状态
@@ -177,9 +204,9 @@
       document.getElementById("status").innerText = "状态已复位";
     }
 
-    // 绑定按钮事件
+    // 按钮绑定
     document.getElementById("btnConnectBluetooth").onclick = connectBluetooth;
-    document.getElementById("btnConnectMQTT").onclick = connectMQTT;
+    document.getElementById("btnConnectHTTP").onclick = connectHTTP;
     document.getElementById("btnReset").onclick = resetStatus;
   </script>
 </body>
