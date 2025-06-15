@@ -127,7 +127,7 @@
       const signContent = `clientId${deviceId}deviceId${deviceId}timestamp${timestamp}`;
       const password = CryptoJS.HmacSHA256(signContent, deviceSecret).toString(CryptoJS.enc.Hex);
 
-      mqttClient = new Paho.MQTT.Client(mqttHost, mqttPort, clientId);
+      mqttClient = new Paho.Client(mqttHost, mqttPort, clientId);
 
       mqttClient.connect({
         userName: username,
