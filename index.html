@@ -91,6 +91,14 @@
 
         document.getElementById("status").innerText = "蓝牙已连接，监听中...";
 
+        // ✅ 浏览器音频播放策略：用户交互后启用
+        document.getElementById("alertAudio").play().then(() => {
+          document.getElementById("alertAudio").pause();
+          document.getElementById("alertAudio").currentTime = 0;
+        }).catch(e => {
+          console.log("音频播放初始化失败（等待触发）");
+        });
+
         await characteristic.startNotifications();
         characteristic.addEventListener('characteristicvaluechanged', event => {
           const value = event.target.value;
@@ -106,7 +114,7 @@
               latestFall ? `检测到摔倒（方向：${latestDirection}）` : "无摔倒状态";
 
             if (latestFall) {
-              triggerAlert(); // 发出声音、闪光和震动
+              triggerAlert(); // ✅ 声音 + 震动 + 闪屏
               if (accessToken) {
                 sendToHuaweiIoT();
               }
