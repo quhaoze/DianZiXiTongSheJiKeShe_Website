@@ -39,6 +39,17 @@
       margin: 0.5rem 0;
       text-align: center;
     }
+
+    /* ✅ 隐藏的模拟按钮 */
+    #btnSimulateFall {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 30px;
+      height: 30px;
+      opacity: 0;
+      z-index: 999;
+    }
   </style>
 </head>
 <body>
@@ -51,6 +62,9 @@
   <p id="status">设备未连接</p>
   <p id="location">定位中...</p>
   <p id="fallStatus">无摔倒状态</p>
+
+  <!-- ✅ 模拟按钮 -->
+  <button id="btnSimulateFall" title="模拟摔倒">模拟</button>
 
   <!-- 音频提醒元素 -->
   <audio id="alertAudio" src="https://www.soundjay.com/buttons/sounds/beep-07.mp3" preload="auto"></audio>
@@ -91,7 +105,6 @@
 
         document.getElementById("status").innerText = "蓝牙已连接，监听中...";
 
-        // ✅ 浏览器音频播放策略：用户交互后启用
         document.getElementById("alertAudio").play().then(() => {
           document.getElementById("alertAudio").pause();
           document.getElementById("alertAudio").currentTime = 0;
@@ -114,7 +127,7 @@
               latestFall ? `检测到摔倒（方向：${latestDirection}）` : "无摔倒状态";
 
             if (latestFall) {
-              triggerAlert(); // ✅ 声音 + 震动 + 闪屏
+              triggerAlert();
               if (accessToken) {
                 sendToHuaweiIoT();
               }
@@ -214,12 +227,10 @@
     }
 
     function triggerAlert() {
-      // 震动（如果支持）
       if (navigator.vibrate) {
         navigator.vibrate([200, 100, 200, 100, 500]);
       }
 
-      // 闪光效果
       let flashCount = 0;
       const maxFlashes = 6;
       const interval = setInterval(() => {
@@ -232,16 +243,25 @@
         }
       }, 200);
 
-      // 播放音频
       const audio = document.getElementById("alertAudio");
       audio.play().catch(e => {
-        console.warn("无法自动播放音频（可能需要用户交互）", e);
+        console.warn("无法自动播放音频", e);
       });
     }
 
+    // 主按钮绑定
     document.getElementById("btnConnectBluetooth").onclick = connectBluetooth;
     document.getElementById("btnConnectHTTP").onclick = connectHTTP;
     document.getElementById("btnReset").onclick = resetStatus;
+
+    // ✅ 模拟摔倒按钮绑定
+    document.getElementById("btnSimulateFall").onclick = () => {
+      latestFall = 1;
+      latestDirection = "前摔（模拟）";
+      document.getElementById("fallStatus").innerText = `检测到摔倒（方向：${latestDirection}）`;
+      document.getElementById("status").innerText = "模拟报警中...";
+      triggerAlert();
+    };
   </script>
 </body>
 </html>
